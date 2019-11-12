@@ -9,7 +9,7 @@ Requirements & repository:
 -> OpenCV2
 -> Numpy
 -> dlib
--> shape predictor 68 face landmarks
+-> shape predictor 68 face landmarks (link: https://github.com/AKSHAYUBHAT/TensorFace/blob/master/openface/models/dlib/shape_predictor_68_face_landmarks.dat)
 
 How to use:
 Run the code using python3 IDE and keeping "shape_predictor_68_face_landmarks.dat" at the same folder as the code. the leftmost point of the left eye and rightmost point of the right eye should be close to the border of the rectangular box. only then the code will run. and give the output
@@ -18,3 +18,4 @@ Issues:
 -> cant run in low light
 -> depth sensing code is not there, so the head must have to be fixed
 -> cant wear spectacles as the reflected light from the monitor screen become the obstacles for the code to detect pupil
+
