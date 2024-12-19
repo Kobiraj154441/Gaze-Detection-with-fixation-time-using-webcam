@@ -1,35 +1,53 @@
 import cv2
 import numpy as np
 import dlib
-import array
+from collections import deque
 import time
-from math import hypot
 
+# Initialize webcam
 cap = cv2.VideoCapture(0)
 
-#takes the values from the file
+# Load Dlib’s face detector and shape predictor
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 
-#array which are needed for all the filters
-arr_left = array.array('i',[])  
-arr_right = array.array('i',[])
-decision_left =  array.array('i',[])
-decision_right =  array.array('i',[])
-fixation_time = []
+# Use deques for dynamic array handling
+arr_left = deque(maxlen=20)  # Keeps the last 20 entries for smoothing
+arr_right = deque(maxlen=20)
+decision_left = deque(maxlen=20)
+decision_right = deque(maxlen=20)
 
-cnt = 0
-flag = 1
-k_cnt = 0
-cnt_fin = 0
-
-#Famous font for printing on the screen
+# Font for displaying data
 font = cv2.FONT_HERSHEY_SIMPLEX
 
-start_time = time.time()
+# Fixation Timer Variables
+fixation_start = None
+fixation_duration = 0
+previous_gaze_point = None  # To track previous gaze point
+
+# Threshold to detect significant gaze movement
+gaze_shift_threshold = 10
+
+# Predefined fixation rectangle area
+fixation_rect = (200, 120, 240, 60)
+
+def calculate_gaze_point(landmarks):
+    """Calculate the average gaze point based on eye landmarks."""
+    left_eye_center = np.mean([(landmarks.part(37).x, landmarks.part(37).y),
+                               (landmarks.part(40).x, landmarks.part(40).y)], axis=0)
+    right_eye_center = np.mean([(landmarks.part(43).x, landmarks.part(43).y),
+                                (landmarks.part(46).x, landmarks.part(46).y)], axis=0)
+    gaze_point = np.mean([left_eye_center, right_eye_center], axis=0)
+    return gaze_point
+
+def is_within_fixation_area(landmarks):
+    """Check if eye landmarks are within the predefined fixation area."""
+    return (fixation_rect[0] <= landmarks.part(37).x <= fixation_rect[0] + fixation_rect[2] and
+            fixation_rect[1] <= landmarks.part(37).y <= fixation_rect[1] + fixation_rect[3] and
+            fixation_rect[0] <= landmarks.part(46).x <= fixation_rect[0] + fixation_rect[2] and
+            fixation_rect[1] <= landmarks.part(46).y <= fixation_rect[1] + fixation_rect[3])
 
 while True:
-    #converting from RGB to GRAY
     _, frame = cap.read()
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     
@@ -37,163 +55,77 @@ while True:
     for face in faces:
         landmarks = predictor(gray, face)
 
-        #gaze detection
-        #Human face can be divided into many points or landmarks. left eye 36-41 and right eye 42-47
-        #polyline is the red hyperbola which is appearing after detecting the eye
-        left_eye_region = np.array([(landmarks.part(36).x, landmarks.part(36).y),
-                    (landmarks.part(37).x, landmarks.part(37).y),
-                    (landmarks.part(38).x, landmarks.part(38).y),
-                    (landmarks.part(39).x, landmarks.part(39).y),
-                    (landmarks.part(40).x, landmarks.part(40).y),
-                    (landmarks.part(41).x, landmarks.part(41).y)], np.int32)
-        right_eye_region = np.array([(landmarks.part(42).x, landmarks.part(42).y),
-                    (landmarks.part(43).x, landmarks.part(43).y),
-                    (landmarks.part(44).x, landmarks.part(44).y),
-                    (landmarks.part(45).x, landmarks.part(45).y),
-                    (landmarks.part(46).x, landmarks.part(46).y),
-                    (landmarks.part(47).x, landmarks.part(47).y)], np.int32)
-        #print (landmarks.part(37).x, landmarks.part(37).y, landmarks.part(46).x, landmarks.part(46).y)
-        if landmarks.part(37).x >= 220 and landmarks.part(37).x <= 250 and landmarks.part(37).y >=130 and landmarks.part(37).y <= 150 and landmarks.part(46).x >=375 and landmarks.part(46).x <=405 and landmarks.part(46).y>=145 and landmarks.part(46).y<=165:
+        if is_within_fixation_area(landmarks):
+            current_gaze_point = calculate_gaze_point(landmarks)
+            
+            if previous_gaze_point is None:
+                previous_gaze_point = current_gaze_point
+                fixation_start = time.time()
+                fixation_duration = 0
+            else:
+                distance = np.linalg.norm(current_gaze_point - previous_gaze_point)
+                
+                if distance > gaze_shift_threshold:
+                    # Gaze moved significantly, reset fixation
+                    fixation_start = time.time()
+                    fixation_duration = 0
+                    previous_gaze_point = current_gaze_point
+                else:
+                    # Continue current fixation
+                    fixation_duration = (time.time() - fixation_start) * 1000  # Milliseconds
+            
+            # Draw eyes
+            left_eye_region = np.array([(landmarks.part(i).x, landmarks.part(i).y) for i in range(36, 42)], np.int32)
+            right_eye_region = np.array([(landmarks.part(i).x, landmarks.part(i).y) for i in range(42, 48)], np.int32)
             cv2.polylines(frame, [left_eye_region], True, (0, 0, 255), 2)
             cv2.polylines(frame, [right_eye_region], True, (0, 0, 255), 2)
-        
-            #minimum ar maximum value is the initial position of the eye
-            left_min_x = np.min(left_eye_region[:, 0])
-            left_max_x = np.max(left_eye_region[:, 0])
-            left_min_y = np.min(left_eye_region[:, 1])
-            left_max_y = np.max(left_eye_region[:, 1])
 
-            right_min_x = np.min(right_eye_region[:, 0])
-            right_max_x = np.max(right_eye_region[:, 0])
-            right_min_y = np.min(right_eye_region[:, 1])
-            right_max_y = np.max(right_eye_region[:, 1])
+            # Compute eye bounding boxes
+            left_min_x, left_min_y = np.min(left_eye_region, axis=0)
+            left_max_x, left_max_y = np.max(left_eye_region, axis=0)
+            right_min_x, right_min_y = np.min(right_eye_region, axis=0)
+            right_max_x, right_max_y = np.max(right_eye_region, axis=0)
 
-            left_eye = frame[left_min_y : left_max_y, left_min_x : left_max_x]
-            right_eye = frame[right_min_y : right_max_y, right_min_x : right_max_x]
-            
-            #To locate the exact pupil, giving the threshold after converting into grey
-            gray_left_eye = cv2.cvtColor(left_eye,cv2.COLOR_BGR2GRAY)
-            gray_right_eye = cv2.cvtColor(right_eye,cv2.COLOR_BGR2GRAY)
+            left_eye = gray[left_min_y:left_max_y, left_min_x:left_max_x]
+            right_eye = gray[right_min_y:right_max_y, right_min_x:right_max_x]
 
-            _, threshold_eye_left = cv2.threshold(gray_left_eye, 70, 255, cv2.THRESH_BINARY_INV)
-            _, threshold_eye_right = cv2.threshold(gray_right_eye, 70, 255, cv2.THRESH_BINARY_INV)
+            _, threshold_left = cv2.threshold(left_eye, 70, 255, cv2.THRESH_BINARY_INV)
+            _, threshold_right = cv2.threshold(right_eye, 70, 255, cv2.THRESH_BINARY_INV)
 
+            left_white = cv2.countNonZero(threshold_left[:, :threshold_left.shape[1] // 2])
+            right_white = cv2.countNonZero(threshold_right[:, threshold_right.shape[1] // 2:])
 
-            height, width = threshold_eye_left.shape
-            
-            threshold_left_side = threshold_eye_left[0 : height, 0 : int(width/2)]
-            threshold_left_side_white = cv2.countNonZero(threshold_left_side)
-            
-            height, width = threshold_eye_left.shape
-            threshold_right_side = threshold_eye_right[0 : height, int(width/2) : width]
-            threshold_right_side_white = cv2.countNonZero(threshold_right_side)
+            arr_left.append(left_white)
+            arr_right.append(right_white)
 
-            cv2.putText(frame, str(threshold_left_side_white), (50,100), font, 2, (0,0,255), 3)
-            cv2.putText(frame, str(threshold_right_side_white), (50, 150), font, 2, (0, 0, 255), 3)
-            
-            #Resizing the frame 
-            left_eye = cv2.resize(left_eye, None, fx=5, fy=5)
-            right_eye = cv2.resize(right_eye, None, fx=5, fy=5)
-            
-            #array to save, sort the fluctuate random values generated by it
-            arr_left.append(threshold_left_side_white)
-            arr_right.append(threshold_right_side_white)
+            # Median and smoothing logic
+            if len(arr_left) > 2 and len(arr_right) > 2:
+                median_left = np.median(arr_left)
+                median_right = np.median(arr_right)
+                decision_left.append(median_left)
+                decision_right.append(median_right)
 
-            arr_left = sorted(arr_left)
-            arr_right = sorted(arr_right)
+                avg_left = np.mean(decision_left)
+                avg_right = np.mean(decision_right)
 
-            left_len = len(arr_left)
-            right_len = len(arr_right)
+                # Display left/right eye data
+                cv2.putText(frame, f"Left: {int(avg_left)}", (30, 180), font, 0.7, (0, 255, 0), 2)
+                cv2.putText(frame, f"Right: {int(avg_right)}", (30, 200), font, 0.7, (0, 255, 0), 2)
 
-            end_time = time.time()
+    # Draw fixation rectangle
+    cv2.rectangle(frame, (fixation_rect[0], fixation_rect[1]), 
+                  (fixation_rect[0] + fixation_rect[2], fixation_rect[1] + fixation_rect[3]), 
+                  (0, 255, 0), 3)
 
-            #print(arr_left[2], arr_left[left_len-1],left_len,end_time-start_time)
-            if flag==1:
-                decision_left.append(arr_left[int((left_len-1)/2)])
-                decision_right.append(arr_right[int((right_len-1)/2)])
+    # Display fixation time
+    cv2.putText(frame, f"Fixation Time: {fixation_duration / 1000:.2f} s", 
+            (30, 50), font, 0.7, (255, 255, 0), 2)
 
-                decision_left_len = len(decision_left)
-                decision_right_len = len(decision_right)
+    cv2.imshow("Gaze Detection with Fixation Time", frame)
 
-                keeper_left = arr_left[int((left_len-1)/2)]
-                keeper_right = arr_right[int((right_len-1)/2)]
-
-                flag = 0
-                cnt_fin = cnt_fin + 1
-            else:
-                if (keeper_left-arr_left[int((left_len-1)/2)]) > 10 or (keeper_left-arr_left[int((left_len-1)/2)]) < -10 or (keeper_right-arr_right[int((right_len-1)/2)]) > 10 or (keeper_right-arr_right[int((right_len-1)/2)]) < -10:
-                    k_cnt = k_cnt + 1
-                    if k_cnt == 3:
-                        end_time = time.time()
-                        if int(end_time-start_time)>0:
-                            fixation_time.append([average_left, average_right, int(end_time-start_time)])           
-                        del decision_left[:]
-                        del decision_right[:]
-                        decision_left = array.array('i',[arr_left[int((left_len-1)/2)]])
-                        decision_right = array.array('i',[arr_right[int((right_len-1)/2)]])
-
-                        decision_left_len = len(decision_left)
-                        decision_right_len = len(decision_right)
-                        print(threshold_left_side_white, threshold_right_side_white, '|', arr_left[int((left_len-1)/2)],arr_right[int((right_len-1)/2)],'|',decision_left[int((decision_left_len-1)/2)],decision_right[int((decision_right_len-1)/2)],'|',average_left,average_right, '|',fixation_time[(len(fixation_time)-1)])
-
-                        keeper_left = arr_left[int((left_len-1)/2)]
-                        keeper_right = arr_right[int((right_len-1)/2)]
-                        p = k_cnt
-                        k_cnt = 0
-                        cnt_fin = 1
-                        end_time = 0
-                        start_time = 0
-                        start_time = time.time()
-                else:
-                    decision_left.append(arr_left[int((left_len-1)/2)])
-                    decision_right.append(arr_right[int((right_len-1)/2)])
-
-                    keeper_left = arr_left[int((left_len-1)/2)]
-                    keeper_right = arr_right[int((right_len-1)/2)]
-
-                    decision_left_len = len(decision_left)
-                    decision_right_len = len(decision_right)
-                    cnt_fin = cnt_fin + 1
-            average_left = int(sum(decision_left) / len(decision_left))
-            average_right = int(sum(decision_right) / len(decision_right))
-            
-            print(threshold_left_side_white, threshold_right_side_white, '|', arr_left[int((left_len-1)/2)],arr_right[int((right_len-1)/2)],'|',decision_left[int((decision_left_len-1)/2)],decision_right[int((decision_right_len-1)/2)],'|',average_left,average_right)
-            cnt = cnt + 1
-            if cnt == 10:
-                a = arr_left[int((left_len-1)/2)]
-                b = arr_right[int((right_len-1)/2)]
-                del arr_left[:]
-                del arr_right[:]
-                arr_left = array.array('i',[a])  
-                arr_right = array.array('i',[b])  
-                cnt = 1
-            if cnt_fin == 16:
-                a = decision_left[int((decision_left_len-1)/2)]
-                b = decision_right[int((decision_right_len-1)/2)]
-
-                del decision_left[:]
-                del decision_right[:]
-
-                decision_left = array.array('i',[a,a])  
-                decision_right = array.array('i',[b,b])
-
-                decision_left_len = len(decision_left)
-                decision_right_len = len(decision_right)
-
-                keeper_left = a
-                keeper_right = b
-                cnt_fin = 1
-                k_cnt = 0
-
-    #The rectangle is the place where the eye will be fixed
-    cv2.rectangle(frame,(200,120),(440,180),(0,255,0),3)
-    cv2.imshow("Frame", frame)
-    
-    #Termination
-    key = cv2.waitKey(1)
-    if key == 27:
+    # Press 'Esc' to exit
+    if cv2.waitKey(1) & 0xFF == 27:
         break
 
-#data release and camera rest
 cap.release()
 cv2.destroyAllWindows()
